@@ -7,7 +7,7 @@ import javax.swing.JOptionPane;
 public class DatabaseManager {
     private static final String DB_URL = "jdbc:mysql://localhost:3306/vehicle_rental";
     private static final String DB_USER = "root";
-    private static final String DB_PASSWORD = "Im@student";
+    private static final String DB_PASSWORD = "yourpassword";
     private static final int MAX_POOL_SIZE = 10;
     private static final int INITIAL_POOL_SIZE = 3;
 
