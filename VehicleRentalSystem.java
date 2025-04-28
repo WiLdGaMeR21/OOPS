@@ -1,197 +1,302 @@
 import javax.swing.*;
-import javax.swing.text.html.HTMLEditorKit;
-import javax.swing.text.html.StyleSheet;
 import java.awt.*;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import javax.swing.table.DefaultTableCellRenderer;
+import javax.swing.SwingConstants;
+import java.util.concurrent.atomic.AtomicBoolean;
 
-/**
- * Main application class for the Vehicle Rental System
- */
 public class VehicleRentalSystem {
-    private final ExecutorService executorService = Executors.newCachedThreadPool();
-    private final UserSession userSession = UserSession.getInstance();
-    private final DatabaseManager dbManager = new DatabaseManager();
-    private final ReceiptManager receiptManager = new ReceiptManager(dbManager);
     private final RentalManager rentalManager = new RentalManager();
+    private final FileManager fileManager = FileManager.getInstance();
+    private final ExecutorService executorService = Executors.newCachedThreadPool();
+    private final AtomicBoolean isShutdownInitiated = new AtomicBoolean(false);
 
-    // UI Components
-    private JFrame mainFrame;
-    private JEditorPane displayArea; // Changed from JTextArea to JEditorPane
+    // Dark mode color scheme - consolidated in one place
+    private static final ColorScheme colors = new ColorScheme();
+
+    private final JFrame mainFrame;
+    private JPanel displayPanel;
     private JTextField vehicleIdField;
-    private JButton adminButton;
-    private JButton logoutButton;
     private JLabel statusLabel;
 
-    public VehicleRentalSystem() {
-        // Create main application frame
-        mainFrame = new JFrame("Vehicle Rental System");
-        mainFrame.setSize(800, 600); // Increased size for better table display
-        mainFrame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+    // Font constants
+    private static final Font HEADER_FONT = new Font("Segoe UI", Font.BOLD, 16);
+    private static final Font REGULAR_FONT = new Font("Segoe UI", Font.PLAIN, 14);
+    private static final Font TABLE_HEADER_FONT = new Font("Segoe UI", Font.BOLD, 12);
+    private static final Font TABLE_FONT = new Font("Segoe UI", Font.PLAIN, 12);
 
-        // Show login screen first
+    // Size constants
+    private static final int WINDOW_WIDTH = 850;
+    private static final int WINDOW_HEIGHT = 600;
+    private static final int TABLE_ROW_HEIGHT = 28;
+
+    // Singleton class for color scheme
+    private static class ColorScheme {
+        final Color DARK_BG = new Color(18, 18, 18);
+        final Color DARK_PANEL = new Color(30, 30, 30);
+        final Color DARK_TEXT = new Color(220, 220, 220);  // Brighter text for better readability
+        final Color DARK_ACCENT = new Color(52, 73, 94);   // Slightly brighter accent color
+        final Color DARK_HOVER = new Color(65, 88, 110);   // Adjusted hover color
+        final Color DARK_SUCCESS = new Color(46, 204, 113);
+        final Color DARK_WARNING = new Color(230, 126, 34);
+        final Color DARK_ERROR = new Color(231, 76, 60);
+        final Color TABLE_HEADER_BG = new Color(40, 55, 71); // Distinct color for table headers
+        final Color TABLE_BORDER = new Color(70, 70, 70);    // More visible border color
+    }
+
+    private void setupFonts() {
+        // Set default fonts for common components
+        UIManager.put("Label.font", REGULAR_FONT);
+        UIManager.put("TextField.font", REGULAR_FONT);
+        UIManager.put("Button.font", REGULAR_FONT);
+        UIManager.put("ComboBox.font", REGULAR_FONT);
+        UIManager.put("Table.font", TABLE_FONT);
+        UIManager.put("TableHeader.font", TABLE_HEADER_FONT);
+        UIManager.put("TabbedPane.font", REGULAR_FONT);
+    }
+
+    private void setupDarkModeUI() {
+        UIManager.put("Panel.background", colors.DARK_BG);
+        UIManager.put("Label.foreground", colors.DARK_TEXT);
+        UIManager.put("TextField.background", colors.DARK_PANEL);
+        UIManager.put("TextField.foreground", colors.DARK_TEXT);
+        UIManager.put("Table.background", colors.DARK_PANEL);
+        UIManager.put("Table.foreground", colors.DARK_TEXT);
+        UIManager.put("TableHeader.background", colors.TABLE_HEADER_BG);
+        UIManager.put("TableHeader.foreground", colors.DARK_TEXT);
+        UIManager.put("ScrollPane.background", colors.DARK_BG);
+        UIManager.put("TextArea.foreground", colors.DARK_TEXT);
+        UIManager.put("TextArea.background", colors.DARK_PANEL);
+        UIManager.put("ScrollBar.background", colors.DARK_BG);
+        UIManager.put("ScrollBar.thumb", colors.DARK_ACCENT);
+    }
+
+    public VehicleRentalSystem() {
+        mainFrame = new JFrame("Vehicle Rental System");
+        mainFrame.setSize(WINDOW_WIDTH, WINDOW_HEIGHT);
+        mainFrame.setDefaultCloseOperation(JFrame.DO_NOTHING_ON_CLOSE);
+
+        // Proper window closing with resource cleanup
+        mainFrame.addWindowListener(new java.awt.event.WindowAdapter() {
+            @Override
+            public void windowClosing(java.awt.event.WindowEvent windowEvent) {
+                shutdown();
+                System.exit(0);
+            }
+        });
+
+        // Set dark mode defaults
+        try {
+            UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
+            setupFonts();
+            setupDarkModeUI();
+        } catch (Exception e) {
+            // Fallback to default, log warning
+            System.err.println("Could not set look and feel: " + e.getMessage());
+        }
+
         showLoginScreen();
     }
 
     private void showLoginScreen() {
         mainFrame.getContentPane().removeAll();
-
-        // Create login panel
         LoginPanel loginPanel = new LoginPanel();
         loginPanel.setLoginListener((username, role) -> {
-            // Handle successful login
-            userSession.login(username, role);
+            LoginPanel.UserSession.getInstance().login(username, role);
             showMainApplication();
         });
-
         mainFrame.getContentPane().add(loginPanel);
         mainFrame.setLocationRelativeTo(null);
         mainFrame.setVisible(true);
     }
 
     private void showMainApplication() {
+        // Ensure we're on the EDT
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater(this::showMainApplication);
+            return;
+        }
+
         mainFrame.getContentPane().removeAll();
         mainFrame.setLayout(new BorderLayout(10, 10));
 
-        // Setup display area with HTML support
-        displayArea = new JEditorPane();
-        displayArea.setEditable(false);
-        displayArea.setContentType("text/html");
+        JPanel headerPanel = createGradientHeaderPanel();
+        mainFrame.add(headerPanel, BorderLayout.NORTH);
 
-        // Add a custom style sheet for better appearance
-        HTMLEditorKit kit = new HTMLEditorKit();
-        StyleSheet styleSheet = kit.getStyleSheet();
-        styleSheet.addRule("body {font-family: SansSerif; font-size: 12pt; margin: 10px;}");
-        styleSheet.addRule("h2 {margin-top: 5px; margin-bottom: 10px;}");
-        styleSheet.addRule("table {width: 100%; border-collapse: collapse;}");
-        styleSheet.addRule("th, td {padding: 8px; border: 1px solid #ddd;}");
-        styleSheet.addRule("th {background-color: #3498db; color: white;}");
-        displayArea.setEditorKit(kit);
+        JPanel contentPanel = new JPanel(new BorderLayout(10, 10));
+        contentPanel.setBorder(BorderFactory.createEmptyBorder(10, 15, 15, 15));
+        contentPanel.setBackground(colors.DARK_BG);
 
-        JScrollPane scrollPane = new JScrollPane(displayArea);
-        scrollPane.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
-        mainFrame.add(scrollPane, BorderLayout.CENTER);
+        displayPanel = new JPanel(new BorderLayout());
+        displayPanel.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(colors.DARK_ACCENT, 1),
+                BorderFactory.createEmptyBorder(5, 5, 5, 5)
+        ));
+        displayPanel.setBackground(colors.DARK_PANEL);
 
-        // Setup top panel with input controls
-        JPanel topPanel = new JPanel(new BorderLayout());
+        contentPanel.add(createControlPanel(), BorderLayout.NORTH);
+        contentPanel.add(displayPanel, BorderLayout.CENTER);
+        contentPanel.add(createBottomPanel(), BorderLayout.SOUTH);
 
-        // Status bar showing logged-in user
-        JPanel statusPanel = createStatusPanel();
-        topPanel.add(statusPanel, BorderLayout.NORTH);
+        mainFrame.add(contentPanel, BorderLayout.CENTER);
 
-        // Input controls
-        JPanel inputPanel = createInputPanel();
-        topPanel.add(inputPanel, BorderLayout.CENTER);
+        // Load data asynchronously to improve startup time
+        executeTask(this::updateVehicleDisplay);
 
-        mainFrame.add(topPanel, BorderLayout.NORTH);
-
-        // Setup bottom panel with additional buttons
-        JPanel bottomPanel = createBottomPanel();
-        mainFrame.add(bottomPanel, BorderLayout.SOUTH);
-
-        // Show initial vehicle list
-        updateVehicleDisplay();
-
-        // Refresh the frame
         mainFrame.revalidate();
         mainFrame.repaint();
     }
 
+    private JPanel createGradientHeaderPanel() {
+        JPanel headerPanel = new JPanel(new BorderLayout()) {
+            @Override
+            protected void paintComponent(Graphics g) {
+                super.paintComponent(g);
+                Graphics2D g2d = (Graphics2D) g.create();
+                g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                int w = getWidth();
+                int h = getHeight();
+                GradientPaint gp = new GradientPaint(0, 0, colors.DARK_ACCENT, w, h, colors.DARK_ACCENT.darker());
+                g2d.setPaint(gp);
+                g2d.fillRect(0, 0, w, h);
+                g2d.dispose();
+            }
+        };
+        headerPanel.setPreferredSize(new Dimension(WINDOW_WIDTH, 70));
+        headerPanel.add(createStatusPanel(), BorderLayout.CENTER);
+        return headerPanel;
+    }
+
     private JPanel createStatusPanel() {
         JPanel panel = new JPanel(new BorderLayout());
-        panel.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
+        panel.setBorder(BorderFactory.createEmptyBorder(10, 15, 10, 15));
+        panel.setOpaque(false);
 
-        // Status label showing logged in user and role
         statusLabel = new JLabel();
+        statusLabel.setForeground(colors.DARK_TEXT);
+        statusLabel.setFont(new Font("SansSerif", Font.BOLD, 14));
         updateStatusLabel();
-        panel.add(statusLabel, BorderLayout.WEST);
 
-        // Logout button
-        logoutButton = new JButton("Logout");
+        JButton logoutButton = createStyledButton("Logout", colors.DARK_ACCENT);
         logoutButton.addActionListener(e -> {
-            userSession.logout();
+            LoginPanel.UserSession.getInstance().logout();
             showLoginScreen();
         });
 
         JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        buttonPanel.setOpaque(false);
         buttonPanel.add(logoutButton);
-        panel.add(buttonPanel, BorderLayout.EAST);
 
+        panel.add(statusLabel, BorderLayout.WEST);
+        panel.add(buttonPanel, BorderLayout.EAST);
         return panel;
     }
 
     private void updateStatusLabel() {
+        LoginPanel.UserSession userSession = LoginPanel.UserSession.getInstance();
         String role = userSession.isAdmin() ? "Administrator" : "Regular User";
         statusLabel.setText("Logged in as: " + userSession.getUsername() + " (" + role + ")");
     }
 
-    private JPanel createInputPanel() {
-        JPanel panel = new JPanel(new GridBagLayout());
-        panel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-        GridBagConstraints gbc = new GridBagConstraints();
+    private JPanel createControlPanel() {
+        JPanel panel = new JPanel(new BorderLayout(10, 10));
+        panel.setBackground(colors.DARK_BG);
 
-        // Vehicle ID label and field
-        gbc.gridx = 0;
-        gbc.gridy = 0;
-        gbc.anchor = GridBagConstraints.WEST;
-        gbc.insets = new Insets(0, 0, 5, 5);
-        panel.add(new JLabel("Vehicle ID:"), gbc);
+        JPanel searchPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 5));
+        searchPanel.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(colors.DARK_ACCENT, 1),
+                BorderFactory.createEmptyBorder(8, 10, 8, 10)
+        ));
+        searchPanel.setBackground(colors.DARK_PANEL);
+
+        JLabel idLabel = new JLabel("Vehicle ID:");
+        idLabel.setForeground(colors.DARK_TEXT);
 
         vehicleIdField = new JTextField(10);
-        gbc.gridx = 1;
-        gbc.fill = GridBagConstraints.HORIZONTAL;
-        panel.add(vehicleIdField, gbc);
+        vehicleIdField.setPreferredSize(new Dimension(100, 30));
+        vehicleIdField.setBackground(colors.DARK_PANEL);
+        vehicleIdField.setForeground(colors.DARK_TEXT);
+        vehicleIdField.setCaretColor(colors.DARK_TEXT);
 
-        // Rent button
-        JButton rentButton = new JButton("Rent Vehicle");
+        JButton rentButton = createStyledButton("Rent Vehicle", colors.DARK_SUCCESS);
         rentButton.addActionListener(e -> executeTask(this::rentVehicle));
-        gbc.gridx = 2;
-        gbc.insets = new Insets(0, 5, 5, 0);
-        panel.add(rentButton, gbc);
 
-        // Return button
-        JButton returnButton = new JButton("Return Vehicle");
+        JButton returnButton = createStyledButton("Return Vehicle", colors.DARK_WARNING);
         returnButton.addActionListener(e -> executeTask(this::returnVehicle));
-        gbc.gridx = 3;
-        panel.add(returnButton, gbc);
 
+        searchPanel.add(idLabel);
+        searchPanel.add(vehicleIdField);
+        searchPanel.add(rentButton);
+        searchPanel.add(returnButton);
+
+        panel.add(searchPanel, BorderLayout.CENTER);
         return panel;
+    }
+
+    private JButton createStyledButton(String text, Color baseColor) {
+        JButton button = new JButton(text);
+        button.setFocusPainted(false);
+        button.setCursor(new Cursor(Cursor.HAND_CURSOR));
+        button.setForeground(Color.WHITE);
+        button.setBackground(baseColor);
+        button.setPreferredSize(new Dimension(120, 30));
+        button.setOpaque(true);
+        button.setBorderPainted(false);
+        button.setUI(new javax.swing.plaf.basic.BasicButtonUI());
+
+        button.addMouseListener(new java.awt.event.MouseAdapter() {
+            @Override
+            public void mouseEntered(java.awt.event.MouseEvent evt) {
+                button.setBackground(baseColor.brighter());
+            }
+
+            @Override
+            public void mouseExited(java.awt.event.MouseEvent evt) {
+                button.setBackground(baseColor);
+            }
+        });
+        return button;
     }
 
     private JPanel createBottomPanel() {
         JPanel panel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 10));
+        panel.setBackground(colors.DARK_BG);
 
-        JButton viewAllButton = new JButton("View All Vehicles");
+        JButton viewAllButton = createStyledButton("View All Vehicles", colors.DARK_ACCENT);
         viewAllButton.addActionListener(e -> executeTask(this::viewAllVehicles));
 
-        JButton viewAvailableButton = new JButton("View Available Vehicles");
+        JButton viewAvailableButton = createStyledButton("View Available", colors.DARK_ACCENT);
         viewAvailableButton.addActionListener(e -> executeTask(this::viewAvailableVehicles));
 
-        JButton rentalHistoryButton = new JButton("View Rental History");
-        rentalHistoryButton.addActionListener(e -> executeTask(this::viewRentalHistory));
-
-        adminButton = new JButton("Admin Panel");
+        JButton adminButton = createStyledButton("Admin Panel", colors.DARK_HOVER);
         adminButton.addActionListener(e -> executeTask(this::openAdminPanel));
-        // Only show admin button to admin users
-        adminButton.setVisible(userSession.isAdmin());
+        adminButton.setVisible(LoginPanel.UserSession.getInstance().isAdmin());
 
         panel.add(viewAllButton);
         panel.add(viewAvailableButton);
-        panel.add(rentalHistoryButton);
         panel.add(adminButton);
-
         return panel;
     }
 
     private void executeTask(Runnable task) {
+        // Don't accept new tasks if shutdown is initiated
+        if (isShutdownInitiated.get()) {
+            return;
+        }
+
         executorService.submit(() -> {
             try {
                 task.run();
             } catch (NumberFormatException ex) {
-                displayMessage("Please enter a valid numeric ID");
+                SwingUtilities.invokeLater(() ->
+                        displayMessage("Please enter a valid numeric ID", colors.DARK_WARNING));
             } catch (Exception ex) {
-                displayMessage("Error: " + ex.getMessage());
+                SwingUtilities.invokeLater(() ->
+                        displayMessage("Error: " + ex.getMessage(), colors.DARK_ERROR));
+                // Log the full stack trace
                 ex.printStackTrace();
             }
         });
@@ -199,18 +304,17 @@ public class VehicleRentalSystem {
 
     private void rentVehicle() {
         try {
-            int vehicleId = Integer.parseInt(vehicleIdField.getText().trim());
+            String vehicleIdText = vehicleIdField.getText().trim();
+            if (vehicleIdText.isEmpty()) {
+                throw new IllegalArgumentException("Vehicle ID cannot be empty");
+            }
 
-            // Updated to match RentalManager implementation
-            boolean success = rentalManager.rentVehicle(vehicleId);
-
-            if (success) {
-                // Generate rental receipt
-                receiptManager.createRentalReceipt(userSession.getUsername(), vehicleId);
-                displayMessage("Vehicle ID " + vehicleId + " rented successfully!");
+            int vehicleId = Integer.parseInt(vehicleIdText);
+            if (rentalManager.rentVehicle(vehicleId)) {
+                displayMessage("Vehicle ID " + vehicleId + " rented successfully!", colors.DARK_SUCCESS);
                 updateVehicleDisplay();
             } else {
-                displayMessage("Vehicle not available or invalid ID.");
+                displayMessage("Vehicle not available or invalid ID.", colors.DARK_WARNING);
             }
         } catch (NumberFormatException e) {
             throw new NumberFormatException("Please enter a valid Vehicle ID");
@@ -219,18 +323,17 @@ public class VehicleRentalSystem {
 
     private void returnVehicle() {
         try {
-            int vehicleId = Integer.parseInt(vehicleIdField.getText().trim());
+            String vehicleIdText = vehicleIdField.getText().trim();
+            if (vehicleIdText.isEmpty()) {
+                throw new IllegalArgumentException("Vehicle ID cannot be empty");
+            }
 
-            // Updated to match RentalManager implementation
-            boolean success = rentalManager.returnVehicle(vehicleId);
-
-            if (success) {
-                // Generate return receipt
-                receiptManager.createReturnReceipt(userSession.getUsername(), vehicleId);
-                displayMessage("Vehicle ID " + vehicleId + " returned successfully!");
+            int vehicleId = Integer.parseInt(vehicleIdText);
+            if (rentalManager.returnVehicle(vehicleId)) {
+                displayMessage("Vehicle ID " + vehicleId + " returned successfully!", colors.DARK_SUCCESS);
                 updateVehicleDisplay();
             } else {
-                displayMessage("Invalid Vehicle ID or already returned.");
+                displayMessage("Invalid Vehicle ID or already returned.", colors.DARK_WARNING);
             }
         } catch (NumberFormatException e) {
             throw new NumberFormatException("Please enter a valid Vehicle ID");
@@ -239,162 +342,309 @@ public class VehicleRentalSystem {
 
     private void viewAllVehicles() {
         List<Vehicle> allVehicles = rentalManager.getAllVehicles();
-        displayVehicles("ALL VEHICLES", allVehicles);
+        if (allVehicles.isEmpty()) {
+            displayMessage("No vehicles found in the system.", colors.DARK_WARNING);
+            return;
+        }
+        displayVehicles("All Vehicles", allVehicles);
     }
 
     private void viewAvailableVehicles() {
         List<Vehicle> availableVehicles = rentalManager.getAvailableVehicles();
-        displayVehicles("AVAILABLE VEHICLES", availableVehicles);
-    }
 
-    private void viewRentalHistory() {
-        List<ReceiptManager.RentalRecord> history = receiptManager.getRentalHistory();
-        displayRentalHistory("RENTAL HISTORY", history);
-    }
-
-    private void displayRentalHistory(String header, List<ReceiptManager.RentalRecord> records) {
-        // Format rental history as HTML
-        StringBuilder html = new StringBuilder();
-        html.append("<html><body>");
-        html.append("<h2>").append(header).append("</h2>");
-
-        if (records.isEmpty()) {
-            html.append("<p>No rental records found.</p>");
-        } else {
-            html.append("<table>");
-
-            // Header row
-            html.append("<tr>");
-            html.append("<th>ID</th>");
-            html.append("<th>Vehicle</th>");
-            html.append("<th>Customer</th>");
-            html.append("<th>Rent Date</th>");
-            html.append("<th>Return Date</th>");
-            html.append("<th>Duration</th>");
-            html.append("<th>Cost</th>");
-            html.append("<th>Status</th>");
-            html.append("</tr>");
-
-            // Data rows
-            for (ReceiptManager.RentalRecord record : records) {
-                html.append("<tr>");
-                html.append("<td>").append(record.getId()).append("</td>");
-                html.append("<td>").append(record.getVehicleId()).append(" - ").append(record.getVehicleModel()).append("</td>");
-                html.append("<td>").append(record.getUsername()).append("</td>");
-                html.append("<td>").append(record.getRentDate().toString().replace("T", " ")).append("</td>");
-
-                if (record.getReturnDate() != null) {
-                    html.append("<td>").append(record.getReturnDate().toString().replace("T", " ")).append("</td>");
-                } else {
-                    html.append("<td>-</td>");
-                }
-
-                html.append("<td>").append(record.getDurationDays()).append(" day(s)</td>");
-
-                if (record.isActive()) {
-                    html.append("<td>Pending</td>");
-                    html.append("<td style='color:#e67e22'>Active</td>");
-                } else {
-                    html.append("<td>$").append(String.format("%.2f", record.getTotalCost())).append("</td>");
-                    html.append("<td style='color:#27ae60'>Returned</td>");
-                }
-
-                html.append("</tr>");
-            }
-
-            html.append("</table>");
+        if (availableVehicles.isEmpty()) {
+            displayMessage("No vehicles are currently available for rent.", colors.DARK_WARNING);
+            return;
         }
 
-        html.append("</body></html>");
-        displayArea.setText(html.toString());
+        displayVehicles("Available Vehicles", availableVehicles);
     }
 
     private void displayVehicles(String header, List<Vehicle> vehicles) {
-        // Format vehicles as HTML
-        StringBuilder html = new StringBuilder();
-        html.append("<html><body>");
-        html.append("<h2>").append(header).append("</h2>");
+        SwingUtilities.invokeLater(() -> {
+            displayPanel.removeAll();
 
-        if (vehicles.isEmpty()) {
-            html.append("<p>No vehicles found.</p>");
-        } else {
-            html.append("<table>");
+            JPanel headerPanel = new JPanel(new BorderLayout()) {
+                @Override
+                protected void paintComponent(Graphics g) {
+                    super.paintComponent(g);
+                    Graphics2D g2d = (Graphics2D) g.create();
+                    int w = getWidth();
+                    int h = getHeight();
+                    GradientPaint gp = new GradientPaint(0, 0, colors.DARK_ACCENT, w, h, colors.DARK_ACCENT.darker());
+                    g2d.setPaint(gp);
+                    g2d.fillRect(0, 0, w, h);
+                    g2d.dispose();
+                }
+            };
+            headerPanel.setOpaque(false);
 
-            // Header row
-            html.append("<tr>");
-            html.append("<th>ID</th>");
-            html.append("<th>Model</th>");
-            html.append("<th>Type</th>");
-            html.append("<th>Rent ($/day)</th>");
-            html.append("<th>Status</th>");
-            html.append("</tr>");
+            JLabel titleLabel = new JLabel(header.toUpperCase());
+            titleLabel.setForeground(Color.WHITE);
+            titleLabel.setFont(HEADER_FONT);
+            titleLabel.setBorder(BorderFactory.createEmptyBorder(8, 10, 8, 10));
+            headerPanel.add(titleLabel, BorderLayout.WEST);
 
-            // Data rows
-            for (Vehicle vehicle : vehicles) {
-                html.append("<tr>");
-                html.append("<td>").append(vehicle.getId()).append("</td>");
-                html.append("<td>").append(vehicle.getModel()).append("</td>");
-                html.append("<td>").append(vehicle.getType()).append("</td>");
-                html.append("<td>$").append(String.format("%.2f", vehicle.getRentPerDay())).append("</td>");
+            // Table setup with dark mode colors
+            String[] columnNames = {"ID", "Type", "Model", "Rent/Day", "Available", "Total", "Status"};
+            Object[][] data = new Object[vehicles.size()][7];
 
-                // Status with color
-                String statusText = vehicle.isAvailable() ? "Available" : "Rented";
-                String statusColor = vehicle.isAvailable() ? "#27ae60" : "#e74c3c";
-                html.append("<td style='color:").append(statusColor).append("'>")
-                        .append(statusText).append("</td>");
-
-                html.append("</tr>");
+            for (int i = 0; i < vehicles.size(); i++) {
+                Vehicle vehicle = vehicles.get(i);
+                data[i][0] = vehicle.getId();
+                data[i][1] = vehicle.getType();
+                data[i][2] = vehicle.getModel();
+                data[i][3] = String.format("$%.2f", vehicle.getRentPerDay());
+                data[i][4] = vehicle.getAvailableQuantity();
+                data[i][5] = vehicle.getQuantity();
+                data[i][6] = vehicle.getAvailabilityStatus();
             }
 
-            html.append("</table>");
-        }
+            // Create the table with a custom model to prevent editing
+            JTable vehicleTable = new JTable(data, columnNames) {
+                @Override
+                public boolean isCellEditable(int row, int column) {
+                    return false;
+                }
 
-        html.append("</body></html>");
-        displayArea.setText(html.toString());
-    }
+                @Override
+                public Component prepareRenderer(javax.swing.table.TableCellRenderer renderer, int row, int column) {
+                    Component c = super.prepareRenderer(renderer, row, column);
+                    if (!isRowSelected(row)) {
+                        // Alternating row colors with better contrast
+                        c.setBackground(row % 2 == 0 ? colors.DARK_PANEL : new Color(35, 35, 35));
+                        c.setForeground(colors.DARK_TEXT);
 
-    private void updateVehicleDisplay() {
-        viewAvailableVehicles(); // Default to showing available vehicles
-    }
+                        // Add subtle border to cells
+                        ((JComponent)c).setBorder(BorderFactory.createMatteBorder(0, 0, 1, 1, colors.TABLE_BORDER));
+                    }
+                    return c;
+                }
+            };
 
-    private void displayMessage(String message) {
-        SwingUtilities.invokeLater(() -> {
-            displayArea.setText("<html><body><h3>" + message + "</h3></body></html>");
+            // Set table properties
+            vehicleTable.setBackground(colors.DARK_PANEL);
+            vehicleTable.setForeground(colors.DARK_TEXT);
+            vehicleTable.setGridColor(colors.TABLE_BORDER);
+            vehicleTable.setFillsViewportHeight(true);
+            vehicleTable.setRowHeight(TABLE_ROW_HEIGHT);
+            vehicleTable.getTableHeader().setReorderingAllowed(false);
+            vehicleTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+
+            // Add a more visible border to the table
+            vehicleTable.setBorder(BorderFactory.createLineBorder(colors.TABLE_BORDER));
+
+            // Header styling - enhanced to be more visible
+            vehicleTable.getTableHeader().setFont(TABLE_HEADER_FONT);
+            vehicleTable.getTableHeader().setBackground(colors.TABLE_HEADER_BG);
+            vehicleTable.getTableHeader().setForeground(colors.DARK_TEXT);
+            vehicleTable.getTableHeader().setPreferredSize(new Dimension(0, 35));
+            // Add a bottom border to header
+            vehicleTable.getTableHeader().setBorder(BorderFactory.createMatteBorder(0, 0, 2, 0, colors.TABLE_BORDER));
+
+            // Set column renderers
+            setupTableRenderers(vehicleTable);
+
+            // Add selection listener
+            vehicleTable.getSelectionModel().addListSelectionListener(e -> {
+                if (!e.getValueIsAdjusting()) {
+                    int selectedRow = vehicleTable.getSelectedRow();
+                    if (selectedRow >= 0) {
+                        vehicleIdField.setText(vehicleTable.getValueAt(selectedRow, 0).toString());
+                    }
+                }
+            });
+
+            JScrollPane tableScrollPane = new JScrollPane(vehicleTable);
+            // Improve scroll pane borders
+            tableScrollPane.setBorder(BorderFactory.createLineBorder(colors.TABLE_BORDER, 1));
+            tableScrollPane.getViewport().setBackground(colors.DARK_PANEL);
+
+            // Summary panel with statistics
+            JPanel summaryPanel = createSummaryPanel(vehicles);
+
+            displayPanel.add(headerPanel, BorderLayout.NORTH);
+            displayPanel.add(tableScrollPane, BorderLayout.CENTER);
+            displayPanel.add(summaryPanel, BorderLayout.SOUTH);
+            displayPanel.revalidate();
+            displayPanel.repaint();
         });
     }
 
+    // Update the table display method to enhance header and border visibility
+    private void setupTableRenderers(JTable table) {
+        // Make table grid lines more visible
+        table.setGridColor(colors.TABLE_BORDER);
+        table.setShowGrid(true);
+        table.setShowHorizontalLines(true);
+        table.setShowVerticalLines(true);
+
+        // Increase table header height for better visibility
+        table.getTableHeader().setPreferredSize(new Dimension(0, 35));
+
+        // Make the table header font slightly larger and bolder
+        table.getTableHeader().setFont(new Font("Segoe UI", Font.BOLD, 13));
+
+        // Center renderer for ID column
+        DefaultTableCellRenderer centerRenderer = new DefaultTableCellRenderer();
+        centerRenderer.setHorizontalAlignment(SwingConstants.CENTER);
+        table.getColumnModel().getColumn(0).setCellRenderer(centerRenderer);
+
+        // Right renderer for price column
+        DefaultTableCellRenderer rightRenderer = new DefaultTableCellRenderer();
+        rightRenderer.setHorizontalAlignment(SwingConstants.RIGHT);
+        table.getColumnModel().getColumn(3).setCellRenderer(rightRenderer);
+
+        // Available column renderer with color coding
+        table.getColumnModel().getColumn(4).setCellRenderer(new DefaultTableCellRenderer() {
+            @Override
+            public Component getTableCellRendererComponent(JTable table, Object value,
+                                                           boolean isSelected, boolean hasFocus,
+                                                           int row, int column) {
+                Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
+                setHorizontalAlignment(SwingConstants.CENTER);
+                if (!isSelected) {
+                    int availableCount = (Integer) value;
+                    if (availableCount <= 0) setForeground(colors.DARK_ERROR);
+                    else if (availableCount < 3) setForeground(colors.DARK_WARNING);
+                    else setForeground(colors.DARK_SUCCESS);
+                }
+                return c;
+            }
+        });
+
+        // Status column renderer with color coding
+        table.getColumnModel().getColumn(6).setCellRenderer(new DefaultTableCellRenderer() {
+            @Override
+            public Component getTableCellRendererComponent(JTable table, Object value,
+                                                           boolean isSelected, boolean hasFocus,
+                                                           int row, int column) {
+                Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
+                if (!isSelected) {
+                    String status = value.toString();
+                    if (status.contains("Rented")) setForeground(colors.DARK_ERROR);
+                    else if (status.contains("Available")) setForeground(colors.DARK_SUCCESS);
+                    else setForeground(colors.DARK_WARNING);
+                }
+                return c;
+            }
+        });
+    }
+
+    private JPanel createSummaryPanel(List<Vehicle> vehicles) {
+        JPanel summaryPanel = new JPanel(new BorderLayout());
+        summaryPanel.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createMatteBorder(1, 0, 0, 0, colors.DARK_ACCENT),
+                BorderFactory.createEmptyBorder(8, 5, 8, 5)
+        ));
+        summaryPanel.setBackground(colors.DARK_PANEL);
+
+        int totalVehicles = vehicles.size();
+        int totalQuantity = vehicles.stream().mapToInt(Vehicle::getQuantity).sum();
+        int availableQuantity = vehicles.stream().mapToInt(Vehicle::getAvailableQuantity).sum();
+        int rentedQuantity = totalQuantity - availableQuantity;
+
+        JLabel countLabel = new JLabel(String.format(
+                "<html><b style='color:%s'>Summary:</b> %d models (%d units, <font color='%s'>%d available</font>, <font color='%s'>%d rented</font></html>",
+                Integer.toHexString(colors.DARK_TEXT.getRGB() & 0xFFFFFF), totalVehicles, totalQuantity,
+                Integer.toHexString(colors.DARK_SUCCESS.getRGB() & 0xFFFFFF), availableQuantity,
+                Integer.toHexString(colors.DARK_ERROR.getRGB() & 0xFFFFFF), rentedQuantity));
+        countLabel.setForeground(colors.DARK_TEXT);
+
+        summaryPanel.add(countLabel, BorderLayout.WEST);
+        return summaryPanel;
+    }
+
+    private void updateVehicleDisplay() {
+        viewAvailableVehicles();
+    }
+
+    private void displayMessage(String message, Color messageColor) {
+        SwingUtilities.invokeLater(() -> {
+            displayPanel.removeAll();
+
+            JPanel messagePanel = new JPanel(new BorderLayout());
+            messagePanel.setBorder(BorderFactory.createEmptyBorder(40, 20, 40, 20));
+            messagePanel.setBackground(colors.DARK_PANEL);
+
+            JLabel messageLabel = new JLabel(message);
+            messageLabel.setFont(REGULAR_FONT);
+            messageLabel.setForeground(messageColor);
+            messageLabel.setHorizontalAlignment(JLabel.CENTER);
+
+            messagePanel.add(messageLabel, BorderLayout.CENTER);
+            displayPanel.add(messagePanel, BorderLayout.CENTER);
+
+            displayPanel.revalidate();
+            displayPanel.repaint();
+        });
+    }
+
+    private void displayMessage(String message) {
+        displayMessage(message, colors.DARK_TEXT);
+    }
+
     private void openAdminPanel() {
-        if (userSession.isAdmin()) {
+        if (LoginPanel.UserSession.getInstance().isAdmin()) {
             AdminPanel adminPanel = new AdminPanel(mainFrame, rentalManager, this::updateVehicleDisplay);
             adminPanel.show();
         } else {
-            displayMessage("Access denied. Administrator privileges required.");
+            displayMessage("Access denied. Administrator privileges required.", colors.DARK_ERROR);
         }
     }
 
-    // Cleanup resources when application closes
-    private void shutdown() {
-        executorService.shutdown();
-        dbManager.closeConnection();
+    public void shutdown() {
+        // Prevent multiple shutdown attempts
+        if (isShutdownInitiated.getAndSet(true)) {
+            return;
+        }
+
+        try {
+            // Proper resource cleanup
+            if (executorService != null && !executorService.isShutdown()) {
+                executorService.shutdown();
+                try {
+                    // Wait for tasks to complete with timeout
+                    if (!executorService.awaitTermination(3, TimeUnit.SECONDS)) {
+                        // Force shutdown if tasks don't complete in time
+                        executorService.shutdownNow();
+                        if (!executorService.awaitTermination(2, TimeUnit.SECONDS)) {
+                            System.err.println("ExecutorService did not terminate");
+                        }
+                    }
+                } catch (InterruptedException e) {
+                    executorService.shutdownNow();
+                    Thread.currentThread().interrupt();
+                }
+            }
+
+            // Close other resources
+            if (fileManager != null) {
+                fileManager.shutdown();
+            }
+
+            if (rentalManager != null) {
+                rentalManager.closeResources();
+            }
+
+            System.out.println("Application resources cleaned up successfully");
+
+        } catch (Exception e) {
+            System.err.println("Error during shutdown: " + e.getMessage());
+            e.printStackTrace();
+        }
     }
 
     public static void main(String[] args) {
         try {
-            // Set Nimbus look and feel
-            for (UIManager.LookAndFeelInfo info : UIManager.getInstalledLookAndFeels()) {
-                if ("Nimbus".equals(info.getName())) {
-                    UIManager.setLookAndFeel(info.getClassName());
-                    break;
-                }
-            }
+            UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
         } catch (Exception e) {
             // Fall back to default look and feel
+            System.err.println("Could not set system look and feel: " + e.getMessage());
         }
 
         SwingUtilities.invokeLater(() -> {
-            VehicleRentalSystem system = new VehicleRentalSystem();
-
-            // Add shutdown hook
+            final VehicleRentalSystem system = new VehicleRentalSystem();
             Runtime.getRuntime().addShutdownHook(new Thread(system::shutdown));
         });
     }
